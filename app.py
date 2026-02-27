@@ -46,7 +46,7 @@ def resize_image(img: Image.Image, target_w: int, target_h: int, bg: str) -> Ima
 
 
 # ===== 탭 구성 =====
-tab_resize, tab_webp = st.tabs(["📐 사이즈 변환", "🔄 WebP 변환"])
+tab_resize, tab_custom, tab_webp = st.tabs(["📐 사이즈 변환", "📏 커스텀 리사이즈", "🔄 WebP 변환"])
 
 # ===== 탭 1: 사이즈 변환 (기존 기능) =====
 with tab_resize:
@@ -121,7 +121,84 @@ with tab_resize:
                 use_container_width=True,
             )
 
-# ===== 탭 2: WebP 변환 =====
+# ===== 탭 2: 커스텀 리사이즈 =====
+with tab_custom:
+    st.markdown("**가로 × 세로(px)**를 직접 입력하여 이미지를 리사이즈합니다.")
+
+    col_w, col_h = st.columns(2)
+    with col_w:
+        custom_w = st.number_input("가로 (px)", min_value=1, max_value=10000, value=800, step=1, key="custom_w")
+    with col_h:
+        custom_h = st.number_input("세로 (px)", min_value=1, max_value=10000, value=600, step=1, key="custom_h")
+
+    custom_bg = st.color_picker("여백(패딩) 배경색", "#FFFFFF", key="custom_bg")
+
+    custom_files = st.file_uploader(
+        "이미지를 업로드하세요 (여러 장 가능)",
+        type=["png", "jpg", "jpeg", "webp", "bmp", "tiff"],
+        accept_multiple_files=True,
+        key="custom_uploader",
+    )
+
+    if custom_files:
+        st.divider()
+        st.subheader(f"📏 {len(custom_files)}개 이미지 → {custom_w}×{custom_h} 변환")
+
+        custom_images: list[tuple[str, bytes]] = []
+
+        for uploaded in custom_files:
+            img = Image.open(uploaded)
+            original_w, original_h = img.size
+
+            col1, col2 = st.columns(2)
+            with col1:
+                st.caption(f"원본: {original_w}×{original_h}")
+                st.image(uploaded, use_container_width=True)
+
+            result = resize_image(img, custom_w, custom_h, custom_bg)
+
+            with col2:
+                st.caption(f"변환: {custom_w}×{custom_h}")
+                st.image(result, use_container_width=True)
+
+            buf = io.BytesIO()
+            result.save(buf, format="PNG", optimize=True)
+            buf.seek(0)
+            img_bytes = buf.getvalue()
+
+            stem = uploaded.name.rsplit(".", 1)[0]
+            filename = f"{stem}_{custom_w}x{custom_h}.png"
+            custom_images.append((filename, img_bytes))
+
+        st.divider()
+
+        if len(custom_images) == 1:
+            fname, data = custom_images[0]
+            st.download_button(
+                label=f"⬇️ {fname} 다운로드",
+                data=data,
+                file_name=fname,
+                mime="image/png",
+                use_container_width=True,
+                key="custom_download_single",
+            )
+        else:
+            zip_buf = io.BytesIO()
+            with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                for fname, data in custom_images:
+                    zf.writestr(fname, data)
+            zip_buf.seek(0)
+
+            st.download_button(
+                label=f"⬇️ 전체 {len(custom_images)}개 이미지 ZIP 다운로드",
+                data=zip_buf.getvalue(),
+                file_name=f"custom_images_{custom_w}x{custom_h}.zip",
+                mime="application/zip",
+                use_container_width=True,
+                key="custom_download_zip",
+            )
+
+# ===== 탭 3: WebP 변환 =====
 with tab_webp:
     st.markdown("PNG, JPEG 등 이미지를 **WebP 포맷**으로 변환합니다.")
 
@@ -211,6 +288,14 @@ with st.sidebar:
         """
 **📐 사이즈 변환**
 1. 변환할 **사이즈** 선택
+2. 여백 **배경색** 선택
+3. 이미지 **업로드** (여러 장 가능)
+4. 변환 결과 확인 후 **다운로드**
+
+---
+
+**📏 커스텀 리사이즈**
+1. 원하는 **가로 × 세로(px)** 입력
 2. 여백 **배경색** 선택
 3. 이미지 **업로드** (여러 장 가능)
 4. 변환 결과 확인 후 **다운로드**
