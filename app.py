@@ -222,9 +222,12 @@ with tab_webp:
             img = Image.open(uploaded)
             w, h = img.size
 
-            # RGBA → WebP는 지원되지만, 필요시 RGB 변환
-            if img.mode == "RGBA":
-                save_img = img
+            # 투명도가 있는 이미지는 RGBA로 변환하여 알파 채널 유지
+            has_alpha = img.mode in ("RGBA", "LA") or (
+                img.mode == "P" and "transparency" in img.info
+            )
+            if has_alpha:
+                save_img = img.convert("RGBA")
             else:
                 save_img = img.convert("RGB")
 
