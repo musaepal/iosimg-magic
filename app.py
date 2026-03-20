@@ -112,7 +112,11 @@ def extract_icon(img: Image.Image, tolerance: int = 30, padding: int = 10) -> Im
     edge_labels.discard(0)  # 0은 배경이 아닌 픽셀
 
     # 외곽 연결 배경만 투명으로 설정 (내부 흰색은 유지)
-    outer_bg = np.isin(labeled, list(edge_labels))
+    if not edge_labels:
+        # 가장자리에 배경색이 없는 경우: 전체 배경색 픽셀을 투명 처리 (fallback)
+        outer_bg = is_bg_color
+    else:
+        outer_bg = np.isin(labeled, list(edge_labels))
     result_arr = arr.copy()
     result_arr[outer_bg, 3] = 0
 
@@ -121,7 +125,8 @@ def extract_icon(img: Image.Image, tolerance: int = 30, padding: int = 10) -> Im
     # 컨텐츠 바운딩 박스로 크롭
     bbox = result_img.getbbox()
     if bbox is None:
-        return result_img
+        # 전체가 투명이면 원본 RGBA 반환
+        return Image.fromarray(arr, "RGBA")
 
     cropped = result_img.crop(bbox)
 
@@ -466,10 +471,14 @@ with tab_icon:
                     (icon_output_size, icon_output_size), Image.LANCZOS
                 )
 
+            # 반드시 RGBA 모드로 저장 (알파 채널 보존)
+            if result.mode != "RGBA":
+                result = result.convert("RGBA")
+
             rw, rh = result.size
 
             buf = io.BytesIO()
-            result.save(buf, format="PNG", optimize=True)
+            result.save(buf, format="PNG", compress_level=6)
             buf.seek(0)
             png_bytes = buf.getvalue()
 
