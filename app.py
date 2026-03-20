@@ -1,6 +1,7 @@
 import io
 import zipfile
 
+import numpy as np
 import streamlit as st
 import tinify
 from PIL import Image
@@ -66,6 +67,48 @@ with st.sidebar:
             st.error("비밀번호가 일치하지 않습니다")
 
 
+def extract_icon(img: Image.Image, tolerance: int = 30, padding: int = 10) -> Image.Image:
+    """배경을 제거하고 아이콘만 정사각형으로 추출."""
+    rgba = img.convert("RGBA")
+    arr = np.array(rgba)
+
+    # 네 모서리 픽셀에서 배경색 추정
+    corners = [arr[0, 0], arr[0, -1], arr[-1, 0], arr[-1, -1]]
+    bg_color = np.mean(corners, axis=0).astype(np.uint8)
+
+    # 배경과의 색상 차이 계산 → 배경이 아닌 픽셀 마스크
+    diff = np.abs(arr[:, :, :3].astype(int) - bg_color[:3].astype(int))
+    mask = np.any(diff > tolerance, axis=2)
+
+    # 알파 채널이 이미 있다면 투명 영역도 배경 처리
+    if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
+        alpha_mask = arr[:, :, 3] > 10
+        mask = mask & alpha_mask
+
+    # 배경 픽셀을 투명으로 설정
+    result_arr = arr.copy()
+    result_arr[~mask, 3] = 0
+
+    result_img = Image.fromarray(result_arr, "RGBA")
+
+    # 컨텐츠 바운딩 박스로 크롭
+    bbox = result_img.getbbox()
+    if bbox is None:
+        return result_img
+
+    cropped = result_img.crop(bbox)
+
+    # 정사각형으로 만들기 (패딩 포함)
+    w, h = cropped.size
+    side = max(w, h) + padding * 2
+    square = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+    offset_x = (side - w) // 2
+    offset_y = (side - h) // 2
+    square.paste(cropped, (offset_x, offset_y), cropped)
+
+    return square
+
+
 def compress_with_tinify(img_bytes: bytes) -> bytes:
     """TinyPNG API로 PNG 압축."""
     return tinify.from_buffer(img_bytes).to_buffer()
@@ -78,13 +121,14 @@ def convert_to_webp_with_tinify(img_bytes: bytes) -> bytes:
 
 
 # ===== 탭 구성 =====
-tabs = ["📐 사이즈 변환", "📏 커스텀 리사이즈", "🔄 WebP 변환"]
+tabs = ["📐 사이즈 변환", "📏 커스텀 리사이즈", "🔄 WebP 변환", "✂️ 아이콘 추출"]
 if tinify_authenticated:
     tabs += ["🐼 TinyPNG 압축", "🐼 TinyPNG WebP"]
 all_tabs = st.tabs(tabs)
 tab_resize = all_tabs[0]
 tab_custom = all_tabs[1]
 tab_webp = all_tabs[2]
+tab_icon = all_tabs[3]
 
 # ===== 탭 1: 사이즈 변환 (기존 기능) =====
 with tab_resize:
@@ -348,9 +392,95 @@ with tab_webp:
                 key="webp_download_zip",
             )
 
-# ===== 탭 4: TinyPNG PNG 압축 =====
+# ===== 탭 4: 아이콘 추출 =====
+with tab_icon:
+    st.markdown("아이콘 이미지의 **배경을 제거**하고 아이콘만 **정사각형으로 추출**합니다.")
+
+    icon_tolerance = st.slider(
+        "배경 제거 민감도 (낮을수록 엄격)", 5, 80, 30, key="icon_tolerance"
+    )
+    icon_padding = st.slider(
+        "아이콘 주변 여백 (px)", 0, 100, 10, key="icon_padding"
+    )
+    icon_output_size = st.number_input(
+        "출력 크기 (px, 0 = 자동)", min_value=0, max_value=4096, value=0, step=1, key="icon_size"
+    )
+
+    icon_files = st.file_uploader(
+        "아이콘 이미지를 업로드하세요 (여러 장 가능)",
+        type=["png", "jpg", "jpeg", "webp", "bmp"],
+        accept_multiple_files=True,
+        key="icon_uploader",
+    )
+
+    if icon_files:
+        st.divider()
+        st.subheader(f"✂️ {len(icon_files)}개 아이콘 추출")
+
+        icon_results: list[tuple[str, bytes]] = []
+
+        for uploaded in icon_files:
+            img = Image.open(uploaded)
+            original_w, original_h = img.size
+
+            result = extract_icon(img, tolerance=icon_tolerance, padding=icon_padding)
+
+            # 출력 크기 지정 시 리사이즈
+            if icon_output_size > 0:
+                result = result.resize(
+                    (icon_output_size, icon_output_size), Image.LANCZOS
+                )
+
+            rw, rh = result.size
+
+            col1, col2 = st.columns(2)
+            with col1:
+                st.caption(f"원본: {original_w}×{original_h}")
+                st.image(uploaded, use_container_width=True)
+            with col2:
+                st.caption(f"추출: {rw}×{rh} (투명 배경)")
+                st.image(result, use_container_width=True)
+
+            buf = io.BytesIO()
+            result.save(buf, format="PNG", optimize=True)
+            buf.seek(0)
+            img_bytes = buf.getvalue()
+
+            stem = uploaded.name.rsplit(".", 1)[0]
+            filename = f"{stem}_icon_{rw}x{rh}.png"
+            icon_results.append((filename, img_bytes))
+
+        st.divider()
+
+        if len(icon_results) == 1:
+            fname, data = icon_results[0]
+            st.download_button(
+                label=f"⬇️ {fname} 다운로드",
+                data=data,
+                file_name=fname,
+                mime="image/png",
+                use_container_width=True,
+                key="icon_download_single",
+            )
+        else:
+            zip_buf = io.BytesIO()
+            with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                for fname, data in icon_results:
+                    zf.writestr(fname, data)
+            zip_buf.seek(0)
+
+            st.download_button(
+                label=f"⬇️ 전체 {len(icon_results)}개 아이콘 ZIP 다운로드",
+                data=zip_buf.getvalue(),
+                file_name="icons_extracted.zip",
+                mime="application/zip",
+                use_container_width=True,
+                key="icon_download_zip",
+            )
+
+# ===== 탭 5: TinyPNG PNG 압축 =====
 if tinify_authenticated:
-    with all_tabs[3]:
+    with all_tabs[4]:
         st.markdown("**TinyPNG** API를 사용하여 PNG를 최대한 압축합니다 (무손실~준무손실).")
 
         tiny_transparent = st.checkbox("투명 배경 유지 (알파 채널 보존)", value=True, key="tiny_transparent")
@@ -432,9 +562,9 @@ if tinify_authenticated:
                         key="tiny_png_download_zip",
                     )
 
-# ===== 탭 5: TinyPNG WebP 변환 =====
+# ===== 탭 6: TinyPNG WebP 변환 =====
 if tinify_authenticated:
-    with all_tabs[4]:
+    with all_tabs[5]:
         st.markdown("**TinyPNG** API를 사용하여 이미지를 **WebP로 변환 + 압축**합니다.")
 
         tiny_webp_transparent = st.checkbox("투명 배경 유지 (알파 채널 보존)", value=True, key="tiny_webp_transparent")
@@ -541,6 +671,13 @@ with st.sidebar:
 1. **품질** 설정 (100 = 무손실)
 2. 이미지 **업로드** (PNG, JPEG 등)
 3. 파일 크기 절감율 확인 후 **다운로드**
+
+---
+
+**✂️ 아이콘 추출**
+1. **민감도 / 여백** 조정
+2. 아이콘 이미지 **업로드**
+3. 배경 제거 + 정사각형 크롭 확인 후 **다운로드**
 
 ---
 
