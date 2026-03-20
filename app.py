@@ -3,8 +3,14 @@ import zipfile
 
 import numpy as np
 import streamlit as st
-import tinify
 from PIL import Image
+
+try:
+    import tinify
+
+    TINIFY_AVAILABLE = True
+except ImportError:
+    TINIFY_AVAILABLE = False
 
 # Streamlit Cloud 제약사항: 기본 업로드 제한 200MB, 메모리 1GB
 
@@ -57,14 +63,17 @@ def resize_image(
 tinify_authenticated = False
 with st.sidebar:
     st.markdown("### TinyPNG 압축")
-    tiny_password = st.text_input("비밀번호 입력", type="password", key="tiny_pw")
-    if tiny_password:
-        if tiny_password == st.secrets.get("APP_PASSWORD", ""):
-            tinify.key = st.secrets["TINIFY_API_KEY"]
-            tinify_authenticated = True
-            st.success("TinyPNG 인증 완료")
-        else:
-            st.error("비밀번호가 일치하지 않습니다")
+    if not TINIFY_AVAILABLE:
+        st.warning("tinify 패키지가 설치되지 않았습니다")
+    else:
+        tiny_password = st.text_input("비밀번호 입력", type="password", key="tiny_pw")
+        if tiny_password:
+            if tiny_password == st.secrets.get("APP_PASSWORD", ""):
+                tinify.key = st.secrets["TINIFY_API_KEY"]
+                tinify_authenticated = True
+                st.success("TinyPNG 인증 완료")
+            else:
+                st.error("비밀번호가 일치하지 않습니다")
 
 
 def extract_icon(img: Image.Image, tolerance: int = 30, padding: int = 10) -> Image.Image:
