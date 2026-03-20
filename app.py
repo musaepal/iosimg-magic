@@ -77,26 +77,57 @@ with st.sidebar:
 
 
 def extract_icon(img: Image.Image, tolerance: int = 30, padding: int = 10) -> Image.Image:
-    """배경을 제거하고 아이콘만 정사각형으로 추출."""
+    """배경을 제거하고 아이콘만 정사각형으로 추출. 외곽 연결 영역만 투명 처리."""
+    from collections import deque
+
     rgba = img.convert("RGBA")
     arr = np.array(rgba)
+    h, w = arr.shape[:2]
 
     # 네 모서리 픽셀에서 배경색 추정
     corners = [arr[0, 0], arr[0, -1], arr[-1, 0], arr[-1, -1]]
     bg_color = np.mean(corners, axis=0).astype(np.uint8)
 
-    # 배경과의 색상 차이 계산 → 배경이 아닌 픽셀 마스크
+    # 배경색과 유사한 픽셀 마스크 (True = 배경색과 비슷함)
     diff = np.abs(arr[:, :, :3].astype(int) - bg_color[:3].astype(int))
-    mask = np.any(diff > tolerance, axis=2)
+    is_bg_color = np.all(diff <= tolerance, axis=2)
 
-    # 알파 채널이 이미 있다면 투명 영역도 배경 처리
+    # 이미 투명한 픽셀도 배경으로 취급
     if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
-        alpha_mask = arr[:, :, 3] > 10
-        mask = mask & alpha_mask
+        is_bg_color = is_bg_color | (arr[:, :, 3] < 10)
 
-    # 배경 픽셀을 투명으로 설정
+    # Flood fill: 이미지 가장자리에서 연결된 배경 픽셀만 마킹
+    visited = np.zeros((h, w), dtype=bool)
+    queue = deque()
+
+    # 가장자리 픽셀 중 배경색인 것들을 시작점으로 추가
+    for x in range(w):
+        if is_bg_color[0, x] and not visited[0, x]:
+            queue.append((0, x))
+            visited[0, x] = True
+        if is_bg_color[h - 1, x] and not visited[h - 1, x]:
+            queue.append((h - 1, x))
+            visited[h - 1, x] = True
+    for y in range(h):
+        if is_bg_color[y, 0] and not visited[y, 0]:
+            queue.append((y, 0))
+            visited[y, 0] = True
+        if is_bg_color[y, w - 1] and not visited[y, w - 1]:
+            queue.append((y, w - 1))
+            visited[y, w - 1] = True
+
+    # BFS로 외곽에서 연결된 배경만 탐색
+    while queue:
+        cy, cx = queue.popleft()
+        for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+            ny, nx = cy + dy, cx + dx
+            if 0 <= ny < h and 0 <= nx < w and not visited[ny, nx] and is_bg_color[ny, nx]:
+                visited[ny, nx] = True
+                queue.append((ny, nx))
+
+    # 외곽 연결 배경만 투명으로 설정 (내부 흰색은 유지)
     result_arr = arr.copy()
-    result_arr[~mask, 3] = 0
+    result_arr[visited, 3] = 0
 
     result_img = Image.fromarray(result_arr, "RGBA")
 
