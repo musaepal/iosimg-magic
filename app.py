@@ -415,6 +415,13 @@ with tab_icon:
         "출력 크기 (px, 0 = 자동)", min_value=0, max_value=4096, value=0, step=1, key="icon_size"
     )
 
+    if tinify_authenticated:
+        icon_tinify_webp = st.checkbox(
+            "🐼 TinyPNG WebP 변환도 함께 생성", value=False, key="icon_tinify_webp"
+        )
+    else:
+        icon_tinify_webp = False
+
     icon_files = st.file_uploader(
         "아이콘 이미지를 업로드하세요 (여러 장 가능)",
         type=["png", "jpg", "jpeg", "webp", "bmp"],
@@ -427,6 +434,7 @@ with tab_icon:
         st.subheader(f"✂️ {len(icon_files)}개 아이콘 추출")
 
         icon_results: list[tuple[str, bytes]] = []
+        icon_webp_results: list[tuple[str, bytes]] = []
 
         for uploaded in icon_files:
             img = Image.open(uploaded)
@@ -442,25 +450,44 @@ with tab_icon:
 
             rw, rh = result.size
 
+            buf = io.BytesIO()
+            result.save(buf, format="PNG", optimize=True)
+            buf.seek(0)
+            png_bytes = buf.getvalue()
+
+            stem = uploaded.name.rsplit(".", 1)[0]
+            png_filename = f"{stem}_icon_{rw}x{rh}.png"
+            icon_results.append((png_filename, png_bytes))
+
+            # TinyPNG WebP 변환
+            webp_bytes = None
+            if icon_tinify_webp:
+                try:
+                    webp_bytes = convert_to_webp_with_tinify(png_bytes)
+                    webp_filename = f"{stem}_icon_{rw}x{rh}.webp"
+                    icon_webp_results.append((webp_filename, webp_bytes))
+                except Exception as e:
+                    st.error(f"{uploaded.name} TinyPNG WebP 변환 실패: {e}")
+
+            # 미리보기
             col1, col2 = st.columns(2)
             with col1:
                 st.caption(f"원본: {original_w}×{original_h}")
                 st.image(uploaded, use_container_width=True)
             with col2:
-                st.caption(f"추출: {rw}×{rh} (투명 배경)")
+                st.caption(f"추출: {rw}×{rh} (투명 배경, {len(png_bytes) / 1024:.1f} KB)")
                 st.image(result, use_container_width=True)
 
-            buf = io.BytesIO()
-            result.save(buf, format="PNG", optimize=True)
-            buf.seek(0)
-            img_bytes = buf.getvalue()
-
-            stem = uploaded.name.rsplit(".", 1)[0]
-            filename = f"{stem}_icon_{rw}x{rh}.png"
-            icon_results.append((filename, img_bytes))
+            if webp_bytes:
+                webp_ratio = (1 - len(webp_bytes) / len(png_bytes)) * 100
+                st.caption(
+                    f"🐼 WebP: {len(webp_bytes) / 1024:.1f} KB ({webp_ratio:.1f}% 절감)"
+                )
+                st.image(webp_bytes, use_container_width=True)
 
         st.divider()
 
+        # PNG 다운로드
         if len(icon_results) == 1:
             fname, data = icon_results[0]
             st.download_button(
@@ -479,13 +506,41 @@ with tab_icon:
             zip_buf.seek(0)
 
             st.download_button(
-                label=f"⬇️ 전체 {len(icon_results)}개 아이콘 ZIP 다운로드",
+                label=f"⬇️ 전체 {len(icon_results)}개 아이콘 PNG ZIP 다운로드",
                 data=zip_buf.getvalue(),
                 file_name="icons_extracted.zip",
                 mime="application/zip",
                 use_container_width=True,
                 key="icon_download_zip",
             )
+
+        # WebP 다운로드
+        if icon_webp_results:
+            if len(icon_webp_results) == 1:
+                fname, data = icon_webp_results[0]
+                st.download_button(
+                    label=f"⬇️ {fname} 다운로드",
+                    data=data,
+                    file_name=fname,
+                    mime="image/webp",
+                    use_container_width=True,
+                    key="icon_webp_download_single",
+                )
+            else:
+                zip_buf = io.BytesIO()
+                with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for fname, data in icon_webp_results:
+                        zf.writestr(fname, data)
+                zip_buf.seek(0)
+
+                st.download_button(
+                    label=f"⬇️ 전체 {len(icon_webp_results)}개 아이콘 WebP ZIP 다운로드",
+                    data=zip_buf.getvalue(),
+                    file_name="icons_webp.zip",
+                    mime="application/zip",
+                    use_container_width=True,
+                    key="icon_webp_download_zip",
+                )
 
 # ===== 탭 5: TinyPNG PNG 압축 =====
 if tinify_authenticated:
