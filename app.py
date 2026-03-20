@@ -22,7 +22,9 @@ def hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
     return tuple(int(hex_color[i : i + 2], 16) for i in (0, 2, 4))
 
 
-def resize_image(img: Image.Image, target_w: int, target_h: int, bg: str) -> Image.Image:
+def resize_image(
+    img: Image.Image, target_w: int, target_h: int, bg: str, transparent: bool = False
+) -> Image.Image:
     """이미지를 퀄리티 훼손 없이 목표 해상도에 맞춤."""
     original_w, original_h = img.size
 
@@ -30,17 +32,21 @@ def resize_image(img: Image.Image, target_w: int, target_h: int, bg: str) -> Ima
     new_w = int(original_w * scale)
     new_h = int(original_h * scale)
 
-    resized = img.resize((new_w, new_h), Image.LANCZOS)
-
-    bg_rgb = hex_to_rgb(bg)
-    if img.mode == "RGBA":
-        canvas = Image.new("RGBA", (target_w, target_h), (*bg_rgb, 255))
+    # 투명 배경일 때는 항상 RGBA로 처리
+    if transparent:
+        resized = img.convert("RGBA").resize((new_w, new_h), Image.LANCZOS)
+        canvas = Image.new("RGBA", (target_w, target_h), (0, 0, 0, 0))
+        canvas.paste(resized, ((target_w - new_w) // 2, (target_h - new_h) // 2), resized)
     else:
-        canvas = Image.new("RGB", (target_w, target_h), bg_rgb)
-
-    offset_x = (target_w - new_w) // 2
-    offset_y = (target_h - new_h) // 2
-    canvas.paste(resized, (offset_x, offset_y))
+        resized = img.resize((new_w, new_h), Image.LANCZOS)
+        bg_rgb = hex_to_rgb(bg)
+        if img.mode == "RGBA":
+            canvas = Image.new("RGBA", (target_w, target_h), (*bg_rgb, 255))
+        else:
+            canvas = Image.new("RGB", (target_w, target_h), bg_rgb)
+        offset_x = (target_w - new_w) // 2
+        offset_y = (target_h - new_h) // 2
+        canvas.paste(resized, (offset_x, offset_y))
 
     return canvas
 
@@ -56,7 +62,11 @@ with tab_resize:
     target_w, target_h = TARGET_SIZES[size_label]
     st.caption(f"선택된 해상도: **{target_w} × {target_h}px**")
 
-    bg_color = st.color_picker("여백(패딩) 배경색", "#FFFFFF")
+    use_transparent = st.checkbox("투명 배경 (알파 100%)", value=False, key="resize_transparent")
+    if not use_transparent:
+        bg_color = st.color_picker("여백(패딩) 배경색", "#FFFFFF")
+    else:
+        bg_color = "#FFFFFF"
 
     uploaded_files = st.file_uploader(
         "이미지를 업로드하세요 (여러 장 가능)",
@@ -80,7 +90,7 @@ with tab_resize:
                 st.caption(f"원본: {original_w}×{original_h}")
                 st.image(uploaded, use_container_width=True)
 
-            result = resize_image(img, target_w, target_h, bg_color)
+            result = resize_image(img, target_w, target_h, bg_color, use_transparent)
 
             with col2:
                 st.caption(f"변환: {target_w}×{target_h}")
@@ -131,7 +141,11 @@ with tab_custom:
     with col_h:
         custom_h = st.number_input("세로 (px)", min_value=1, max_value=10000, value=600, step=1, key="custom_h")
 
-    custom_bg = st.color_picker("여백(패딩) 배경색", "#FFFFFF", key="custom_bg")
+    custom_transparent = st.checkbox("투명 배경 (알파 100%)", value=False, key="custom_transparent")
+    if not custom_transparent:
+        custom_bg = st.color_picker("여백(패딩) 배경색", "#FFFFFF", key="custom_bg")
+    else:
+        custom_bg = "#FFFFFF"
 
     custom_files = st.file_uploader(
         "이미지를 업로드하세요 (여러 장 가능)",
@@ -155,7 +169,7 @@ with tab_custom:
                 st.caption(f"원본: {original_w}×{original_h}")
                 st.image(uploaded, use_container_width=True)
 
-            result = resize_image(img, custom_w, custom_h, custom_bg)
+            result = resize_image(img, custom_w, custom_h, custom_bg, custom_transparent)
 
             with col2:
                 st.caption(f"변환: {custom_w}×{custom_h}")
