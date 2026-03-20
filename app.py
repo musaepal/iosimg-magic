@@ -2,12 +2,13 @@ import io
 import zipfile
 
 import streamlit as st
+import tinify
 from PIL import Image
 
 # Streamlit Cloud 제약사항: 기본 업로드 제한 200MB, 메모리 1GB
-# Pillow만 사용하여 외부 의존성 최소화
 
 TARGET_SIZES = {
+    "원본 사이즈 (리사이즈 없음)": None,
     "1242 × 2688 (iPhone XS Max / 6.5인치)": (1242, 2688),
     "2064 × 2752 (iPad 6th gen / 스크린샷)": (2064, 2752),
 }
@@ -51,22 +52,61 @@ def resize_image(
     return canvas
 
 
+# ===== TinyPNG 인증 (사이드바) =====
+tinify_authenticated = False
+with st.sidebar:
+    st.markdown("### TinyPNG 압축")
+    tiny_password = st.text_input("비밀번호 입력", type="password", key="tiny_pw")
+    if tiny_password:
+        if tiny_password == st.secrets.get("APP_PASSWORD", ""):
+            tinify.key = st.secrets["TINIFY_API_KEY"]
+            tinify_authenticated = True
+            st.success("TinyPNG 인증 완료")
+        else:
+            st.error("비밀번호가 일치하지 않습니다")
+
+
+def compress_with_tinify(img_bytes: bytes) -> bytes:
+    """TinyPNG API로 PNG 압축."""
+    return tinify.from_buffer(img_bytes).to_buffer()
+
+
+def convert_to_webp_with_tinify(img_bytes: bytes) -> bytes:
+    """TinyPNG API로 WebP 변환 압축."""
+    source = tinify.from_buffer(img_bytes)
+    return source.convert(type="image/webp").to_buffer()
+
+
 # ===== 탭 구성 =====
-tab_resize, tab_custom, tab_webp = st.tabs(["📐 사이즈 변환", "📏 커스텀 리사이즈", "🔄 WebP 변환"])
+tabs = ["📐 사이즈 변환", "📏 커스텀 리사이즈", "🔄 WebP 변환"]
+if tinify_authenticated:
+    tabs += ["🐼 TinyPNG 압축", "🐼 TinyPNG WebP"]
+all_tabs = st.tabs(tabs)
+tab_resize = all_tabs[0]
+tab_custom = all_tabs[1]
+tab_webp = all_tabs[2]
 
 # ===== 탭 1: 사이즈 변환 (기존 기능) =====
 with tab_resize:
     st.markdown("이미지를 업로드하면 **퀄리티 훼손 없이** 원하는 해상도로 변환합니다.")
 
     size_label = st.selectbox("변환할 사이즈를 선택하세요", list(TARGET_SIZES.keys()))
-    target_w, target_h = TARGET_SIZES[size_label]
-    st.caption(f"선택된 해상도: **{target_w} × {target_h}px**")
+    target_size = TARGET_SIZES[size_label]
+    keep_original = target_size is None
+    if not keep_original:
+        target_w, target_h = target_size
+        st.caption(f"선택된 해상도: **{target_w} × {target_h}px**")
 
-    use_transparent = st.checkbox("투명 배경 (알파 100%)", value=False, key="resize_transparent")
-    if not use_transparent:
-        bg_color = st.color_picker("여백(패딩) 배경색", "#FFFFFF")
-    else:
-        bg_color = "#FFFFFF"
+    if not keep_original:
+        use_transparent = st.checkbox("투명 배경 (알파 100%)", value=False, key="resize_transparent")
+        if not use_transparent:
+            bg_color = st.color_picker("여백(패딩) 배경색", "#FFFFFF")
+        else:
+            bg_color = "#FFFFFF"
+
+    png_compress = st.slider(
+        "PNG 압축 레벨 (0=빠름/큰파일, 9=느림/작은파일)", 0, 9, 6, key="resize_compress"
+    )
 
     uploaded_files = st.file_uploader(
         "이미지를 업로드하세요 (여러 장 가능)",
@@ -85,24 +125,30 @@ with tab_resize:
             img = Image.open(uploaded)
             original_w, original_h = img.size
 
+            if keep_original:
+                result = img
+                result_w, result_h = original_w, original_h
+            else:
+                result = resize_image(img, target_w, target_h, bg_color, use_transparent)
+                result_w, result_h = target_w, target_h
+
             col1, col2 = st.columns(2)
             with col1:
                 st.caption(f"원본: {original_w}×{original_h}")
                 st.image(uploaded, use_container_width=True)
-
-            result = resize_image(img, target_w, target_h, bg_color, use_transparent)
-
             with col2:
-                st.caption(f"변환: {target_w}×{target_h}")
+                label = "원본 유지" if keep_original else f"변환: {result_w}×{result_h}"
+                st.caption(label)
                 st.image(result, use_container_width=True)
 
             buf = io.BytesIO()
-            result.save(buf, format="PNG", optimize=True)
+            result.save(buf, format="PNG", compress_level=png_compress)
             buf.seek(0)
             img_bytes = buf.getvalue()
 
             stem = uploaded.name.rsplit(".", 1)[0]
-            filename = f"{stem}_{target_w}x{target_h}.png"
+            suffix = f"_{result_w}x{result_h}" if not keep_original else ""
+            filename = f"{stem}{suffix}.png"
             processed_images.append((filename, img_bytes))
 
         st.divider()
@@ -126,7 +172,7 @@ with tab_resize:
             st.download_button(
                 label=f"⬇️ 전체 {len(processed_images)}개 이미지 ZIP 다운로드",
                 data=zip_buf.getvalue(),
-                file_name=f"ios_images_{target_w}x{target_h}.zip",
+                file_name="ios_images_original.zip" if keep_original else f"ios_images_{target_w}x{target_h}.zip",
                 mime="application/zip",
                 use_container_width=True,
             )
@@ -146,6 +192,10 @@ with tab_custom:
         custom_bg = st.color_picker("여백(패딩) 배경색", "#FFFFFF", key="custom_bg")
     else:
         custom_bg = "#FFFFFF"
+
+    custom_compress = st.slider(
+        "PNG 압축 레벨 (0=빠름/큰파일, 9=느림/작은파일)", 0, 9, 6, key="custom_compress"
+    )
 
     custom_files = st.file_uploader(
         "이미지를 업로드하세요 (여러 장 가능)",
@@ -176,7 +226,7 @@ with tab_custom:
                 st.image(result, use_container_width=True)
 
             buf = io.BytesIO()
-            result.save(buf, format="PNG", optimize=True)
+            result.save(buf, format="PNG", compress_level=custom_compress)
             buf.seek(0)
             img_bytes = buf.getvalue()
 
@@ -298,6 +348,174 @@ with tab_webp:
                 key="webp_download_zip",
             )
 
+# ===== 탭 4: TinyPNG PNG 압축 =====
+if tinify_authenticated:
+    with all_tabs[3]:
+        st.markdown("**TinyPNG** API를 사용하여 PNG를 최대한 압축합니다 (무손실~준무손실).")
+
+        tiny_transparent = st.checkbox("투명 배경 유지 (알파 채널 보존)", value=True, key="tiny_transparent")
+
+        tiny_png_files = st.file_uploader(
+            "압축할 PNG 이미지를 업로드하세요 (여러 장 가능)",
+            type=["png", "jpg", "jpeg"],
+            accept_multiple_files=True,
+            key="tiny_png_uploader",
+        )
+
+        if tiny_png_files:
+            st.divider()
+            st.subheader(f"🐼 {len(tiny_png_files)}개 이미지 TinyPNG 압축")
+
+            tiny_results: list[tuple[str, bytes]] = []
+
+            for uploaded in tiny_png_files:
+                img = Image.open(uploaded)
+                w, h = img.size
+                original_bytes = uploaded.getvalue()
+                original_size = len(original_bytes)
+
+                # 투명 배경 유지: RGBA로 변환 후 PNG으로 저장
+                if tiny_transparent:
+                    has_alpha = img.mode in ("RGBA", "LA") or (
+                        img.mode == "P" and "transparency" in img.info
+                    )
+                    if has_alpha:
+                        img = img.convert("RGBA")
+                    buf = io.BytesIO()
+                    img.save(buf, format="PNG")
+                    buf.seek(0)
+                    original_bytes = buf.getvalue()
+
+                try:
+                    compressed = compress_with_tinify(original_bytes)
+                    compressed_size = len(compressed)
+                    ratio = (1 - compressed_size / original_size) * 100 if original_size > 0 else 0
+
+                    stem = uploaded.name.rsplit(".", 1)[0]
+                    filename = f"{stem}_tiny.png"
+                    tiny_results.append((filename, compressed))
+
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.caption(f"원본: {uploaded.name} ({w}×{h}, {original_size / 1024:.1f} KB)")
+                        st.image(uploaded, use_container_width=True)
+                    with col2:
+                        st.caption(f"압축: {filename} ({compressed_size / 1024:.1f} KB, {ratio:.1f}% 절감)")
+                        st.image(compressed, use_container_width=True)
+                except Exception as e:
+                    st.error(f"{uploaded.name} 압축 실패: {e}")
+
+            if tiny_results:
+                st.divider()
+                if len(tiny_results) == 1:
+                    fname, data = tiny_results[0]
+                    st.download_button(
+                        label=f"⬇️ {fname} 다운로드",
+                        data=data,
+                        file_name=fname,
+                        mime="image/png",
+                        use_container_width=True,
+                        key="tiny_png_download_single",
+                    )
+                else:
+                    zip_buf = io.BytesIO()
+                    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                        for fname, data in tiny_results:
+                            zf.writestr(fname, data)
+                    zip_buf.seek(0)
+                    st.download_button(
+                        label=f"⬇️ 전체 {len(tiny_results)}개 압축 PNG ZIP 다운로드",
+                        data=zip_buf.getvalue(),
+                        file_name="tinypng_compressed.zip",
+                        mime="application/zip",
+                        use_container_width=True,
+                        key="tiny_png_download_zip",
+                    )
+
+# ===== 탭 5: TinyPNG WebP 변환 =====
+if tinify_authenticated:
+    with all_tabs[4]:
+        st.markdown("**TinyPNG** API를 사용하여 이미지를 **WebP로 변환 + 압축**합니다.")
+
+        tiny_webp_transparent = st.checkbox("투명 배경 유지 (알파 채널 보존)", value=True, key="tiny_webp_transparent")
+
+        tiny_webp_files = st.file_uploader(
+            "변환할 이미지를 업로드하세요 (여러 장 가능)",
+            type=["png", "jpg", "jpeg"],
+            accept_multiple_files=True,
+            key="tiny_webp_uploader",
+        )
+
+        if tiny_webp_files:
+            st.divider()
+            st.subheader(f"🐼 {len(tiny_webp_files)}개 이미지 → TinyPNG WebP 변환")
+
+            tiny_webp_results: list[tuple[str, bytes]] = []
+
+            for uploaded in tiny_webp_files:
+                img = Image.open(uploaded)
+                w, h = img.size
+                original_bytes = uploaded.getvalue()
+                original_size = len(original_bytes)
+
+                # 투명 배경 유지: RGBA로 변환 후 PNG으로 전달
+                if tiny_webp_transparent:
+                    has_alpha = img.mode in ("RGBA", "LA") or (
+                        img.mode == "P" and "transparency" in img.info
+                    )
+                    if has_alpha:
+                        img = img.convert("RGBA")
+                    buf = io.BytesIO()
+                    img.save(buf, format="PNG")
+                    buf.seek(0)
+                    original_bytes = buf.getvalue()
+
+                try:
+                    webp_bytes = convert_to_webp_with_tinify(original_bytes)
+                    webp_size = len(webp_bytes)
+                    ratio = (1 - webp_size / original_size) * 100 if original_size > 0 else 0
+
+                    stem = uploaded.name.rsplit(".", 1)[0]
+                    filename = f"{stem}_tiny.webp"
+                    tiny_webp_results.append((filename, webp_bytes))
+
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.caption(f"원본: {uploaded.name} ({w}×{h}, {original_size / 1024:.1f} KB)")
+                        st.image(uploaded, use_container_width=True)
+                    with col2:
+                        st.caption(f"WebP: {filename} ({webp_size / 1024:.1f} KB, {ratio:.1f}% 절감)")
+                        st.image(webp_bytes, use_container_width=True)
+                except Exception as e:
+                    st.error(f"{uploaded.name} 변환 실패: {e}")
+
+            if tiny_webp_results:
+                st.divider()
+                if len(tiny_webp_results) == 1:
+                    fname, data = tiny_webp_results[0]
+                    st.download_button(
+                        label=f"⬇️ {fname} 다운로드",
+                        data=data,
+                        file_name=fname,
+                        mime="image/webp",
+                        use_container_width=True,
+                        key="tiny_webp_download_single",
+                    )
+                else:
+                    zip_buf = io.BytesIO()
+                    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                        for fname, data in tiny_webp_results:
+                            zf.writestr(fname, data)
+                    zip_buf.seek(0)
+                    st.download_button(
+                        label=f"⬇️ 전체 {len(tiny_webp_results)}개 WebP ZIP 다운로드",
+                        data=zip_buf.getvalue(),
+                        file_name="tinypng_webp.zip",
+                        mime="application/zip",
+                        use_container_width=True,
+                        key="tiny_webp_download_zip",
+                    )
+
 # --- 사이드바 안내 ---
 with st.sidebar:
     st.markdown("### 사용 안내")
@@ -323,6 +541,13 @@ with st.sidebar:
 1. **품질** 설정 (100 = 무손실)
 2. 이미지 **업로드** (PNG, JPEG 등)
 3. 파일 크기 절감율 확인 후 **다운로드**
+
+---
+
+**🐼 TinyPNG (비밀번호 필요)**
+- 사이드바에서 비밀번호 입력 후 사용
+- PNG 압축 / WebP 변환 압축
+- 투명 배경 유지 옵션 지원
 
 ---
 
