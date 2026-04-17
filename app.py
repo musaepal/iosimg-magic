@@ -152,10 +152,18 @@ def convert_to_webp_with_tinify(img_bytes: bytes) -> bytes:
     return source.convert(type="image/webp").to_buffer()
 
 
+def convert_to_jpeg_with_tinify(img_bytes: bytes, bg_hex: str = "#FFFFFF") -> bytes:
+    """TinyPNG API로 JPEG 변환 압축. 투명 영역은 배경색으로 채움."""
+    source = tinify.from_buffer(img_bytes)
+    bg_rgb = hex_to_rgb(bg_hex)
+    transform = {"background": f"#{bg_rgb[0]:02x}{bg_rgb[1]:02x}{bg_rgb[2]:02x}"}
+    return source.convert(type="image/jpeg").transform(**transform).to_buffer()
+
+
 # ===== 탭 구성 =====
 tabs = ["📐 사이즈 변환", "📏 커스텀 리사이즈", "🔄 WebP 변환", "✂️ 아이콘 추출"]
 if tinify_authenticated:
-    tabs += ["🐼 TinyPNG 압축", "🐼 TinyPNG WebP"]
+    tabs += ["🐼 TinyPNG 압축", "🐼 TinyPNG WebP", "🐼 TinyPNG JPEG"]
 all_tabs = st.tabs(tabs)
 tab_resize = all_tabs[0]
 tab_custom = all_tabs[1]
@@ -737,6 +745,79 @@ if tinify_authenticated:
                         key="tiny_webp_download_zip",
                     )
 
+# ===== 탭 7: TinyPNG JPEG 변환 =====
+if tinify_authenticated:
+    with all_tabs[6]:
+        st.markdown("**TinyPNG** API를 사용하여 이미지를 **JPEG로 변환 + 압축**합니다.")
+        st.caption("JPEG는 투명도를 지원하지 않으므로 투명 영역은 배경색으로 채워집니다.")
+
+        tiny_jpeg_bg = st.color_picker("투명 영역 배경색", "#FFFFFF", key="tiny_jpeg_bg")
+
+        tiny_jpeg_files = st.file_uploader(
+            "변환할 이미지를 업로드하세요 (여러 장 가능)",
+            type=["png", "jpg", "jpeg", "webp"],
+            accept_multiple_files=True,
+            key="tiny_jpeg_uploader",
+        )
+
+        if tiny_jpeg_files:
+            st.divider()
+            st.subheader(f"🐼 {len(tiny_jpeg_files)}개 이미지 → TinyPNG JPEG 변환")
+
+            tiny_jpeg_results: list[tuple[str, bytes]] = []
+
+            for uploaded in tiny_jpeg_files:
+                img = Image.open(uploaded)
+                w, h = img.size
+                original_bytes = uploaded.getvalue()
+                original_size = len(original_bytes)
+
+                try:
+                    jpeg_bytes = convert_to_jpeg_with_tinify(original_bytes, tiny_jpeg_bg)
+                    jpeg_size = len(jpeg_bytes)
+                    ratio = (1 - jpeg_size / original_size) * 100 if original_size > 0 else 0
+
+                    stem = uploaded.name.rsplit(".", 1)[0]
+                    filename = f"{stem}_tiny.jpg"
+                    tiny_jpeg_results.append((filename, jpeg_bytes))
+
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.caption(f"원본: {uploaded.name} ({w}×{h}, {original_size / 1024:.1f} KB)")
+                        st.image(uploaded, use_container_width=True)
+                    with col2:
+                        st.caption(f"JPEG: {filename} ({jpeg_size / 1024:.1f} KB, {ratio:.1f}% 절감)")
+                        st.image(jpeg_bytes, use_container_width=True)
+                except Exception as e:
+                    st.error(f"{uploaded.name} 변환 실패: {e}")
+
+            if tiny_jpeg_results:
+                st.divider()
+                if len(tiny_jpeg_results) == 1:
+                    fname, data = tiny_jpeg_results[0]
+                    st.download_button(
+                        label=f"⬇️ {fname} 다운로드",
+                        data=data,
+                        file_name=fname,
+                        mime="image/jpeg",
+                        use_container_width=True,
+                        key="tiny_jpeg_download_single",
+                    )
+                else:
+                    zip_buf = io.BytesIO()
+                    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                        for fname, data in tiny_jpeg_results:
+                            zf.writestr(fname, data)
+                    zip_buf.seek(0)
+                    st.download_button(
+                        label=f"⬇️ 전체 {len(tiny_jpeg_results)}개 JPEG ZIP 다운로드",
+                        data=zip_buf.getvalue(),
+                        file_name="tinypng_jpeg.zip",
+                        mime="application/zip",
+                        use_container_width=True,
+                        key="tiny_jpeg_download_zip",
+                    )
+
 # --- 사이드바 안내 ---
 with st.sidebar:
     st.markdown("### 사용 안내")
@@ -774,8 +855,8 @@ with st.sidebar:
 
 **🐼 TinyPNG (비밀번호 필요)**
 - 사이드바에서 비밀번호 입력 후 사용
-- PNG 압축 / WebP 변환 압축
-- 투명 배경 유지 옵션 지원
+- PNG 압축 / WebP 변환 / JPEG 변환 압축
+- 투명 배경 유지 옵션 지원 (JPEG는 배경색 채움)
 
 ---
 
