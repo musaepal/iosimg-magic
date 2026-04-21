@@ -59,6 +59,21 @@ def resize_image(
     return canvas
 
 
+def crop_to_fill(img: Image.Image, target_w: int, target_h: int) -> Image.Image:
+    """이미지를 중앙 기준으로 크롭하여 목표 비율에 꽉 채움."""
+    original_w, original_h = img.size
+
+    scale = max(target_w / original_w, target_h / original_h)
+    new_w = int(original_w * scale)
+    new_h = int(original_h * scale)
+
+    resized = img.resize((new_w, new_h), Image.LANCZOS)
+
+    left = (new_w - target_w) // 2
+    top = (new_h - target_h) // 2
+    return resized.crop((left, top, left + target_w, top + target_h))
+
+
 # ===== TinyPNG 인증 (사이드바) =====
 tinify_authenticated = False
 with st.sidebar:
@@ -161,14 +176,15 @@ def convert_to_jpeg_with_tinify(img_bytes: bytes, bg_hex: str = "#FFFFFF") -> by
 
 
 # ===== 탭 구성 =====
-tabs = ["📐 사이즈 변환", "📏 커스텀 리사이즈", "🔄 WebP 변환", "✂️ 아이콘 추출"]
+tabs = ["📐 사이즈 변환", "📏 커스텀 리사이즈", "🎬 16:9 변환", "🔄 WebP 변환", "✂️ 아이콘 추출"]
 if tinify_authenticated:
     tabs += ["🐼 TinyPNG 압축", "🐼 TinyPNG WebP", "🐼 TinyPNG JPEG"]
 all_tabs = st.tabs(tabs)
 tab_resize = all_tabs[0]
 tab_custom = all_tabs[1]
-tab_webp = all_tabs[2]
-tab_icon = all_tabs[3]
+tab_169 = all_tabs[2]
+tab_webp = all_tabs[3]
+tab_icon = all_tabs[4]
 
 # ===== 탭 1: 사이즈 변환 (기존 기능) =====
 with tab_resize:
@@ -346,7 +362,128 @@ with tab_custom:
                 key="custom_download_zip",
             )
 
-# ===== 탭 3: WebP 변환 =====
+# ===== 탭 3: 16:9 변환 =====
+with tab_169:
+    st.markdown("이미지를 **16:9 비율**로 변환합니다. (가로/세로 모두 지원)")
+
+    PRESETS_169 = {
+        "3840 × 2160 (4K UHD)": (3840, 2160),
+        "2560 × 1440 (2K QHD)": (2560, 1440),
+        "1920 × 1080 (Full HD)": (1920, 1080),
+        "1280 × 720 (HD)": (1280, 720),
+        "직접 입력": None,
+    }
+
+    preset_label = st.selectbox("해상도", list(PRESETS_169.keys()), key="169_preset")
+    orientation = st.radio(
+        "방향", ["가로 (16:9)", "세로 (9:16)"], horizontal=True, key="169_orientation"
+    )
+
+    preset = PRESETS_169[preset_label]
+    if preset is None:
+        long_side = st.number_input(
+            "긴 쪽 길이 (px)", min_value=16, max_value=10000, value=1920, step=1, key="169_long"
+        )
+        short_side = long_side * 9 // 16
+    else:
+        long_side, short_side = preset
+
+    if orientation == "가로 (16:9)":
+        target_169_w, target_169_h = long_side, short_side
+    else:
+        target_169_w, target_169_h = short_side, long_side
+
+    st.caption(f"출력 해상도: **{target_169_w} × {target_169_h}px**")
+
+    mode_169 = st.radio(
+        "변환 방식",
+        ["Fit (여백 채움)", "Fill (중앙 크롭)"],
+        horizontal=True,
+        key="169_mode",
+        help="Fit: 원본 전체 유지 + 여백 추가 / Fill: 원본을 크롭하여 꽉 채움",
+    )
+    is_fit = mode_169.startswith("Fit")
+
+    if is_fit:
+        transparent_169 = st.checkbox("투명 배경 (알파 100%)", value=False, key="169_transparent")
+        if not transparent_169:
+            bg_169 = st.color_picker("여백 배경색", "#000000", key="169_bg")
+        else:
+            bg_169 = "#000000"
+    else:
+        transparent_169 = False
+        bg_169 = "#000000"
+
+    files_169 = st.file_uploader(
+        "이미지를 업로드하세요 (여러 장 가능)",
+        type=["png", "jpg", "jpeg", "webp", "bmp", "tiff"],
+        accept_multiple_files=True,
+        key="169_uploader",
+    )
+
+    if files_169:
+        st.divider()
+        st.subheader(f"🎬 {len(files_169)}개 이미지 → {target_169_w}×{target_169_h}")
+
+        results_169: list[tuple[str, bytes]] = []
+
+        for uploaded in files_169:
+            img = Image.open(uploaded)
+            ow, oh = img.size
+
+            if is_fit:
+                result = resize_image(img, target_169_w, target_169_h, bg_169, transparent_169)
+            else:
+                result = crop_to_fill(img, target_169_w, target_169_h)
+
+            col1, col2 = st.columns(2)
+            with col1:
+                st.caption(f"원본: {ow}×{oh}")
+                st.image(uploaded, use_container_width=True)
+            with col2:
+                st.caption(f"변환: {target_169_w}×{target_169_h}")
+                st.image(result, use_container_width=True)
+
+            if result.mode != "RGBA" and (transparent_169 or result.mode == "RGBA"):
+                result = result.convert("RGBA")
+
+            buf = io.BytesIO()
+            result.save(buf, format="PNG", compress_level=6)
+            buf.seek(0)
+            img_bytes = buf.getvalue()
+
+            stem = uploaded.name.rsplit(".", 1)[0]
+            filename = f"{stem}_{target_169_w}x{target_169_h}.png"
+            results_169.append((filename, img_bytes))
+
+        st.divider()
+
+        if len(results_169) == 1:
+            fname, data = results_169[0]
+            st.download_button(
+                label=f"⬇️ {fname} 다운로드",
+                data=data,
+                file_name=fname,
+                mime="image/png",
+                use_container_width=True,
+                key="169_download_single",
+            )
+        else:
+            zip_buf = io.BytesIO()
+            with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                for fname, data in results_169:
+                    zf.writestr(fname, data)
+            zip_buf.seek(0)
+            st.download_button(
+                label=f"⬇️ 전체 {len(results_169)}개 이미지 ZIP 다운로드",
+                data=zip_buf.getvalue(),
+                file_name=f"images_16_9_{target_169_w}x{target_169_h}.zip",
+                mime="application/zip",
+                use_container_width=True,
+                key="169_download_zip",
+            )
+
+# ===== 탭 4: WebP 변환 =====
 with tab_webp:
     st.markdown("PNG, JPEG 등 이미지를 **WebP 포맷**으로 변환합니다.")
 
@@ -432,7 +569,7 @@ with tab_webp:
                 key="webp_download_zip",
             )
 
-# ===== 탭 4: 아이콘 추출 =====
+# ===== 탭 5: 아이콘 추출 =====
 with tab_icon:
     st.markdown("아이콘 이미지의 **배경을 제거**하고 아이콘만 **정사각형으로 추출**합니다.")
 
@@ -577,9 +714,9 @@ with tab_icon:
                     key="icon_webp_download_zip",
                 )
 
-# ===== 탭 5: TinyPNG PNG 압축 =====
+# ===== 탭 6: TinyPNG PNG 압축 =====
 if tinify_authenticated:
-    with all_tabs[4]:
+    with all_tabs[5]:
         st.markdown("**TinyPNG** API를 사용하여 PNG를 최대한 압축합니다 (무손실~준무손실).")
 
         tiny_transparent = st.checkbox("투명 배경 유지 (알파 채널 보존)", value=True, key="tiny_transparent")
@@ -661,9 +798,9 @@ if tinify_authenticated:
                         key="tiny_png_download_zip",
                     )
 
-# ===== 탭 6: TinyPNG WebP 변환 =====
+# ===== 탭 7: TinyPNG WebP 변환 =====
 if tinify_authenticated:
-    with all_tabs[5]:
+    with all_tabs[6]:
         st.markdown("**TinyPNG** API를 사용하여 이미지를 **WebP로 변환 + 압축**합니다.")
 
         tiny_webp_transparent = st.checkbox("투명 배경 유지 (알파 채널 보존)", value=True, key="tiny_webp_transparent")
@@ -745,9 +882,9 @@ if tinify_authenticated:
                         key="tiny_webp_download_zip",
                     )
 
-# ===== 탭 7: TinyPNG JPEG 변환 =====
+# ===== 탭 8: TinyPNG JPEG 변환 =====
 if tinify_authenticated:
-    with all_tabs[6]:
+    with all_tabs[7]:
         st.markdown("**TinyPNG** API를 사용하여 이미지를 **JPEG로 변환 + 압축**합니다.")
         st.caption("JPEG는 투명도를 지원하지 않으므로 투명 영역은 배경색으로 채워집니다.")
 
@@ -836,6 +973,14 @@ with st.sidebar:
 2. 여백 **배경색** 선택
 3. 이미지 **업로드** (여러 장 가능)
 4. 변환 결과 확인 후 **다운로드**
+
+---
+
+**🎬 16:9 변환**
+1. 프리셋(4K/2K/FHD/HD) 또는 직접 입력
+2. 가로(16:9) / 세로(9:16) 선택
+3. **Fit**(여백) 또는 **Fill**(크롭) 방식 선택
+4. 이미지 업로드 후 **다운로드**
 
 ---
 
