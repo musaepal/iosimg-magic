@@ -293,9 +293,17 @@ with tab_custom:
     else:
         custom_bg = "#FFFFFF"
 
-    custom_compress = st.slider(
-        "PNG 압축 레벨 (0=빠름/큰파일, 9=느림/작은파일)", 0, 9, 6, key="custom_compress"
-    )
+    col_q1, col_q2 = st.columns(2)
+    with col_q1:
+        custom_compress = st.slider(
+            "PNG 압축 (0~9)", 0, 9, 6, key="custom_compress",
+            help="PNG 저장 시 적용. 무손실"
+        )
+    with col_q2:
+        custom_quality = st.slider(
+            "JPEG/WebP 품질 (1~100)", 1, 100, 90, key="custom_quality",
+            help="JPEG/WebP 저장 시 적용. 100=무손실(WebP)"
+        )
 
     custom_files = st.file_uploader(
         "이미지를 업로드하세요 (여러 장 가능)",
@@ -304,15 +312,28 @@ with tab_custom:
         key="custom_uploader",
     )
 
+    EXT_FORMAT_MAP = {
+        "png": ("PNG", "image/png"),
+        "jpg": ("JPEG", "image/jpeg"),
+        "jpeg": ("JPEG", "image/jpeg"),
+        "webp": ("WEBP", "image/webp"),
+        "bmp": ("BMP", "image/bmp"),
+        "tif": ("TIFF", "image/tiff"),
+        "tiff": ("TIFF", "image/tiff"),
+    }
+
     if custom_files:
         st.divider()
         st.subheader(f"📏 {len(custom_files)}개 이미지 → {custom_w}×{custom_h} 변환")
 
-        custom_images: list[tuple[str, bytes]] = []
+        custom_images: list[tuple[str, bytes, str]] = []
 
         for uploaded in custom_files:
             img = Image.open(uploaded)
             original_w, original_h = img.size
+
+            ext = uploaded.name.rsplit(".", 1)[-1].lower() if "." in uploaded.name else "png"
+            fmt, mime = EXT_FORMAT_MAP.get(ext, ("PNG", "image/png"))
 
             col1, col2 = st.columns(2)
             with col1:
@@ -322,34 +343,53 @@ with tab_custom:
             result = resize_image(img, custom_w, custom_h, custom_bg, custom_transparent)
 
             with col2:
-                st.caption(f"변환: {custom_w}×{custom_h}")
+                st.caption(f"변환: {custom_w}×{custom_h} ({fmt})")
                 st.image(result, use_container_width=True)
 
+            # 포맷별 저장 옵션
+            save_img = result
             buf = io.BytesIO()
-            result.save(buf, format="PNG", compress_level=custom_compress)
+            if fmt == "PNG":
+                save_img.save(buf, format="PNG", compress_level=custom_compress)
+            elif fmt == "JPEG":
+                # JPEG는 알파 채널 미지원 → RGB로 변환
+                if save_img.mode != "RGB":
+                    save_img = save_img.convert("RGB")
+                save_img.save(buf, format="JPEG", quality=custom_quality, optimize=True)
+            elif fmt == "WEBP":
+                if custom_quality == 100:
+                    save_img.save(buf, format="WEBP", lossless=True)
+                else:
+                    save_img.save(buf, format="WEBP", quality=custom_quality)
+            elif fmt == "BMP":
+                if save_img.mode == "RGBA":
+                    save_img = save_img.convert("RGB")
+                save_img.save(buf, format="BMP")
+            elif fmt == "TIFF":
+                save_img.save(buf, format="TIFF")
             buf.seek(0)
             img_bytes = buf.getvalue()
 
             stem = uploaded.name.rsplit(".", 1)[0]
-            filename = f"{stem}_{custom_w}x{custom_h}.png"
-            custom_images.append((filename, img_bytes))
+            filename = f"{stem}_{custom_w}x{custom_h}.{ext}"
+            custom_images.append((filename, img_bytes, mime))
 
         st.divider()
 
         if len(custom_images) == 1:
-            fname, data = custom_images[0]
+            fname, data, mime = custom_images[0]
             st.download_button(
                 label=f"⬇️ {fname} 다운로드",
                 data=data,
                 file_name=fname,
-                mime="image/png",
+                mime=mime,
                 use_container_width=True,
                 key="custom_download_single",
             )
         else:
             zip_buf = io.BytesIO()
             with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
-                for fname, data in custom_images:
+                for fname, data, _mime in custom_images:
                     zf.writestr(fname, data)
             zip_buf.seek(0)
 
